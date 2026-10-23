@@ -16,6 +16,22 @@ export const DEFAULT_CONFIG: ConnectionConfig = {
 
 const CONFIG_STORAGE_KEY = 'netis_wf2409e_config_v1';
 
+export function isPrivateIpAddress(url: string): boolean {
+  try {
+    let clean = (url || '').trim();
+    if (!/^https?:\/\//i.test(clean)) clean = `http://${clean}`;
+    const parsed = new URL(clean);
+    const host = parsed.hostname;
+    if (host === 'localhost' || host === '127.0.0.1') return true;
+    if (host.startsWith('192.168.')) return true;
+    if (host.startsWith('10.')) return true;
+    if (/^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(host)) return true;
+    return false;
+  } catch {
+    return false;
+  }
+}
+
 export function getStoredConfig(): ConnectionConfig {
   try {
     const raw = localStorage.getItem(CONFIG_STORAGE_KEY);
@@ -456,21 +472,45 @@ export async function testRouterConnection(
     targetUrl: string;
     authHeaderSent: boolean;
     isPrivateLan?: boolean;
+    isCloudDeployed?: boolean;
     code?: string;
     explanation?: string;
     localNetworkRestricted?: boolean;
     resolutionHelp?: string;
   };
 }> {
+  const isPrivate = isPrivateIpAddress(url);
+  const isCloud =
+    typeof window !== 'undefined' &&
+    (window.location.hostname.endsWith('vercel.app') ||
+      window.location.hostname.endsWith('web.app') ||
+      window.location.hostname.endsWith('run.app') ||
+      (!window.location.hostname.includes('localhost') &&
+        !window.location.hostname.startsWith('192.168.') &&
+        !window.location.hostname.startsWith('127.0.0.1')));
+
   try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 6000);
+
     const res = await fetch('/api/router/test', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ routerUrl: url, username: user, password: pass }),
+      signal: controller.signal,
     });
+    clearTimeout(timeoutId);
 
     if (res.ok) {
-      return await res.json();
+      const data = await res.json();
+      return {
+        ...data,
+        diagnostics: {
+          ...data.diagnostics,
+          isPrivateLan: isPrivate || data.diagnostics?.isPrivateLan,
+          isCloudDeployed: isCloud || data.diagnostics?.isCloudDeployed,
+        },
+      };
     }
   } catch {
     // Handled below
@@ -483,10 +523,13 @@ export async function testRouterConnection(
     diagnostics: {
       targetUrl: url,
       authHeaderSent: !!pass,
+      isPrivateLan: isPrivate,
+      isCloudDeployed: isCloud,
       localNetworkRestricted: true,
-      code: 'NETWORK_ERROR',
-      explanation:
-        'Router IP 192.168.2.254 is on your private home network. Ensure your device is on the Netis Wi-Fi network or run this app locally.',
+      code: isPrivate ? 'PRIVATE_LAN_FROM_CLOUD' : 'NETWORK_ERROR',
+      explanation: isPrivate
+        ? 'Router IP 192.168.2.254 is on your private home network. Vercel cloud server cannot access inside your home Wi-Fi.'
+        : `Cannot reach router at ${url}. Check your network connection.`,
     },
   };
 }

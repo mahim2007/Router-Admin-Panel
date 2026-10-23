@@ -24,6 +24,7 @@ import {
 } from '../types/router';
 import {
   changeAdminPassword,
+  isPrivateIpAddress,
   rebootRouter,
   runPingTest,
   testRouterConnection,
@@ -453,20 +454,40 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                     The router at {routerUrl} rejected the credentials for username &apos;{username}&apos;. Please verify the exact username and password configured on your router.
                   </p>
                 </div>
-              ) : testResult.diagnostics?.isPrivateLan ? (
-                <div className="text-[11px] leading-relaxed text-amber-800/90 dark:text-amber-300/90 pt-1 border-t border-amber-200/60 dark:border-amber-800/60 space-y-1.5">
-                  <p className="font-semibold text-amber-900 dark:text-amber-100">
-                    Local Network (LAN vs Cloud) Explanation:
-                  </p>
-                  <p>
-                    <span className="font-mono font-semibold">192.168.2.254</span> is your home router&apos;s private IP. Because this app is running in a cloud preview server, the cloud server cannot reach inside your home Wi-Fi network.
-                  </p>
-                  <div className="p-2 bg-white/60 dark:bg-slate-900/60 rounded-xl space-y-1">
-                    <p className="font-semibold text-slate-800 dark:text-slate-200">How to connect with your real router:</p>
-                    <ul className="list-disc pl-4 space-y-0.5 text-[10px]">
-                      <li><strong>Local Deployment:</strong> Run the app locally on your device connected to the Netis Wi-Fi (<span className="font-mono">npm run dev</span>).</li>
-                      <li><strong>Remote Management:</strong> In Netis web panel (<span className="font-mono">System Tools &gt; Remote Management</span>), enable remote access and use your Public IP or DDNS.</li>
-                    </ul>
+              ) : testResult.diagnostics?.isPrivateLan || isPrivateIpAddress(routerUrl) ? (
+                <div className="text-[11px] leading-relaxed text-amber-900 dark:text-amber-200 pt-1.5 border-t border-amber-200/60 dark:border-amber-800/60 space-y-2">
+                  <div className="p-2.5 bg-white/70 dark:bg-slate-900/70 rounded-xl space-y-1 border border-amber-200/50 dark:border-amber-900/40">
+                    <p className="font-bold text-amber-950 dark:text-amber-100 flex items-center gap-1.5 text-xs">
+                      <span>⚠️ কেন Vercel থেকে কানেক্ট হচ্ছে না?</span>
+                    </p>
+                    <p className="text-[11px] text-slate-700 dark:text-slate-300 leading-relaxed">
+                      <span className="font-mono font-bold text-slate-900 dark:text-white">192.168.2.254</span> হচ্ছে আপনার বাসার ওয়াইফাই নেটওয়ার্কের নিজস্ব প্রাইভেট আইপি (Local LAN)। আপনি অ্যাপটি <strong className="text-slate-900 dark:text-white">Vercel ক্লাউড সার্ভারে</strong> ডিপ্লয় করেছেন। ইন্টারনেটের ক্লাউড সার্ভার থেকে সরাসরি আপনার বাসার ভেতরের লোকাল আইপিতে রিকোয়েস্ট পৌঁছাতে পারে না।
+                    </p>
+                  </div>
+
+                  <div className="p-2.5 bg-white/70 dark:bg-slate-900/70 rounded-xl space-y-2 border border-amber-200/50 dark:border-amber-900/40">
+                    <p className="font-bold text-slate-900 dark:text-slate-100 text-xs">
+                      কানেক্ট করার ২টি সহজ উপায়:
+                    </p>
+                    <div className="space-y-1.5 text-[11px]">
+                      <div className="p-2 bg-sky-50/80 dark:bg-sky-950/40 rounded-lg border border-sky-200/60 dark:border-sky-800/50">
+                        <p className="font-bold text-sky-900 dark:text-sky-200">
+                          ১. লোকালি চালানো (সবচেয়ে সহজ ও সেরা)
+                        </p>
+                        <p className="text-slate-600 dark:text-slate-400 mt-0.5 text-[10.5px]">
+                          বাসার একই ওয়াইফাইয়ে সংযুক্ত ল্যাপটপ/পিসিতে বা মোবাইলের Termux-এ <code className="px-1 py-0.5 bg-sky-100 dark:bg-sky-900 text-sky-800 dark:text-sky-200 rounded font-mono font-semibold">npm run dev</code> চালিয়ে ব্রাউজারে খুললে সরাসরি আপনার রাউটারের সাথে কাজ করবে।
+                        </p>
+                      </div>
+
+                      <div className="p-2 bg-indigo-50/80 dark:bg-indigo-950/40 rounded-lg border border-indigo-200/60 dark:border-indigo-800/50">
+                        <p className="font-bold text-indigo-900 dark:text-indigo-200">
+                          ২. Remote Management চালু করা (Vercel থেকে চালাতে চাইলে)
+                        </p>
+                        <p className="text-slate-600 dark:text-slate-400 mt-0.5 text-[10.5px]">
+                          রাউটার অ্যাডমিনে (<code className="font-mono">192.168.2.254</code>) গিয়ে <strong>Advanced &gt; System Tools &gt; Remote Management</strong> অন করে Port 8080 দিন। এরপর আপনার পাবলিক WAN IP এখানে দিয়ে সেভ করুন (যেমন: <code className="font-mono font-bold">http://[পাবলিক_আইপি]:8080</code>)।
+                        </p>
+                      </div>
+                    </div>
                   </div>
                 </div>
               ) : null}
@@ -477,10 +498,10 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                   href={routerUrl.startsWith('http') ? routerUrl : `http://${routerUrl}`}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="w-full py-1.5 px-3 bg-white dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 border border-slate-200 dark:border-slate-700 rounded-xl font-semibold flex items-center justify-center gap-1.5 text-[11px] transition-colors"
+                  className="w-full py-2 px-3 bg-white dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 border border-slate-200 dark:border-slate-700 rounded-xl font-bold flex items-center justify-center gap-1.5 text-xs transition-colors shadow-xs"
                 >
-                  <ExternalLink className="w-3.5 h-3.5 text-sky-600" />
-                  <span>Open {routerUrl} directly in Browser</span>
+                  <ExternalLink className="w-3.5 h-3.5 text-sky-600 shrink-0" />
+                  <span>সরাসরি ব্রাউজারে রাউটার অ্যাডমিন ওপেন করুন ({routerUrl})</span>
                 </a>
               </div>
             </div>

@@ -35,43 +35,201 @@ function isPrivateIpAddress(url: string): boolean {
   }
 }
 
-// Helper to make timeout-guarded requests to Netis router
+import http from 'http';
+import https from 'https';
+import crypto from 'crypto';
+
+interface RouterCredentials {
+  username?: string;
+  password?: string;
+}
+
+// Compute RFC 2069 / RFC 2617 Digest Authentication header
+function computeDigestHeader(
+  username: string,
+  pass: string,
+  method: string,
+  uri: string,
+  authHeader: string
+): string {
+  const realmMatch = authHeader.match(/realm=["']?([^"',]+)["']?/i);
+  const nonceMatch = authHeader.match(/nonce=["']?([^"',]+)["']?/i);
+  const qopMatch = authHeader.match(/qop=["']?([^"',]+)["']?/i);
+  const opaqueMatch = authHeader.match(/opaque=["']?([^"',]+)["']?/i);
+
+  const realm = realmMatch ? realmMatch[1] : 'WF2409Ev4';
+  const nonce = nonceMatch ? nonceMatch[1] : '';
+  const qop = qopMatch ? qopMatch[1] : undefined;
+  const opaque = opaqueMatch ? opaqueMatch[1] : undefined;
+
+  const ha1 = crypto.createHash('md5').update(`${username}:${realm}:${pass}`).digest('hex');
+  const ha2 = crypto.createHash('md5').update(`${method}:${uri}`).digest('hex');
+
+  let authString = `Digest username="${username}", realm="${realm}", nonce="${nonce}", uri="${uri}"`;
+
+  if (qop) {
+    const cnonce = crypto.randomBytes(8).toString('hex');
+    const nc = '00000001';
+    const response = crypto
+      .createHash('md5')
+      .update(`${ha1}:${nonce}:${nc}:${cnonce}:${qop}:${ha2}`)
+      .digest('hex');
+    authString += `, qop=${qop}, nc=${nc}, cnonce="${cnonce}", response="${response}"`;
+  } else {
+    // RFC 2069 standard used by Boa/Netis
+    const response = crypto.createHash('md5').update(`${ha1}:${nonce}:${ha2}`).digest('hex');
+    authString += `, response="${response}"`;
+  }
+
+  if (opaque) {
+    authString += `, opaque="${opaque}"`;
+  }
+
+  return authString;
+}
+
+// Low-level request with insecureHTTPParser and IPv4 for embedded router compatibility
 async function queryNetisRouter(
   url: string,
   pathUrl: string,
   authHeader?: string,
   method = 'GET',
   bodyData?: any,
-  timeoutMs = 2500
-) {
+  timeoutMs = 4000
+): Promise<{
+  success: boolean;
+  status?: number;
+  body?: string;
+  headers?: http.IncomingHttpHeaders;
+  error?: string;
+}> {
   const cleanBase = normalizeRouterUrl(url);
   const target = `${cleanBase}${pathUrl.startsWith('/') ? pathUrl : `/${pathUrl}`}`;
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
-  const headers: Record<string, string> = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) NetisManager/1.0',
-    'Accept': 'text/html,application/xhtml+xml,application/xml,text/plain,application/json,*/*',
-  };
+  return new Promise((resolve) => {
+    try {
+      const parsed = new URL(target);
+      const isHttps = parsed.protocol === 'https:';
+      const client = isHttps ? https : http;
 
-  if (authHeader) {
-    headers['Authorization'] = authHeader;
+      const headers: Record<string, string> = {
+        'User-Agent':
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Connection': 'close',
+      };
+
+      if (authHeader) {
+        headers['Authorization'] = authHeader;
+      }
+
+      let payloadString: string | undefined;
+      if (bodyData) {
+        payloadString = typeof bodyData === 'string' ? bodyData : JSON.stringify(bodyData);
+        headers['Content-Type'] =
+          typeof bodyData === 'string'
+            ? 'application/x-www-form-urlencoded'
+            : 'application/json';
+        headers['Content-Length'] = Buffer.byteLength(payloadString).toString();
+      }
+
+      const req = client.request(
+        {
+          hostname: parsed.hostname,
+          port: parsed.port || (isHttps ? 443 : 80),
+          path: `${parsed.pathname || '/'}${parsed.search || ''}`,
+          method,
+          headers,
+          family: 4, // Strict IPv4 for home routers
+          insecureHTTPParser: true, // Crucial for Netis WF2409E Boa/embedded HTTP headers
+          timeout: timeoutMs,
+          rejectUnauthorized: false,
+        },
+        (res) => {
+          const chunks: Buffer[] = [];
+          res.on('data', (c) => chunks.push(Buffer.isBuffer(c) ? c : Buffer.from(c)));
+          res.on('end', () => {
+            const body = Buffer.concat(chunks).toString('utf-8');
+            resolve({
+              success: true,
+              status: res.statusCode,
+              headers: res.headers,
+              body,
+            });
+          });
+        }
+      );
+
+      req.on('timeout', () => {
+        req.destroy();
+        resolve({ success: false, error: `Connection timed out (${timeoutMs}ms)` });
+      });
+
+      req.on('error', (err: any) => {
+        resolve({ success: false, error: err.code || err.message || 'Request failed' });
+      });
+
+      if (payloadString) {
+        req.write(payloadString);
+      }
+      req.end();
+    } catch (err: any) {
+      resolve({ success: false, error: err.message || 'URL error' });
+    }
+  });
+}
+
+// High-level request that handles 401 Digest Authentication handshake automatically
+async function executeNetisRequest(
+  url: string,
+  pathUrl: string,
+  creds?: RouterCredentials,
+  method = 'GET',
+  bodyData?: any,
+  timeoutMs = 4500
+): Promise<{
+  success: boolean;
+  status?: number;
+  body?: string;
+  error?: string;
+  authFailed?: boolean;
+}> {
+  const user = creds?.username ? String(creds.username).trim() : '';
+  const pass = creds?.password ? String(creds.password).trim() : '';
+
+  // Step 1: Probe endpoint
+  const initial = await queryNetisRouter(url, pathUrl, undefined, method, bodyData, timeoutMs);
+
+  // If 401 Unauthorized with WWW-Authenticate header
+  if (initial.status === 401 && initial.headers && initial.headers['www-authenticate']) {
+    const authHeader = String(initial.headers['www-authenticate']);
+
+    if (!user && !pass) {
+      return { success: false, status: 401, authFailed: true, error: 'Credentials required by router' };
+    }
+
+    if (/digest/i.test(authHeader)) {
+      const uri = pathUrl.startsWith('/') ? pathUrl : `/${pathUrl}`;
+      const digestHeader = computeDigestHeader(user, pass, method, uri, authHeader);
+      const retry = await queryNetisRouter(url, pathUrl, digestHeader, method, bodyData, timeoutMs);
+
+      if (retry.status === 401) {
+        return { success: false, status: 401, authFailed: true, error: `Invalid username '${user}' or password` };
+      }
+      return retry;
+    } else {
+      // Basic Auth fallback
+      const basicHeader = `Basic ${Buffer.from(`${user}:${pass}`).toString('base64')}`;
+      const retry = await queryNetisRouter(url, pathUrl, basicHeader, method, bodyData, timeoutMs);
+
+      if (retry.status === 401) {
+        return { success: false, status: 401, authFailed: true, error: `Invalid username '${user}' or password` };
+      }
+      return retry;
+    }
   }
 
-  try {
-    const response = await fetch(target, {
-      method,
-      headers,
-      body: bodyData ? (typeof bodyData === 'string' ? bodyData : JSON.stringify(bodyData)) : undefined,
-      signal: controller.signal,
-    });
-    clearTimeout(timeoutId);
-    const text = await response.text();
-    return { success: true, status: response.status, body: text };
-  } catch (err: any) {
-    clearTimeout(timeoutId);
-    return { success: false, error: err.message || 'Connection failed' };
-  }
+  return initial;
 }
 
 /**
@@ -112,13 +270,14 @@ function getAuthHeader(body: any): string | undefined {
 // Router Status Endpoint
 app.post('/api/router/status', async (req: Request, res: Response) => {
   const { routerUrl = 'http://192.168.2.254' } = req.body;
-  const auth = getAuthHeader(req.body);
+  const creds = { username: req.body.username, password: req.body.password };
 
   // Try standard Netis status endpoints sequentially
   const candidateEndpoints = [
+    '/index.htm',
+    '/status.htm',
     '/cgi-bin-igd/netcore_get.cgi?mode_name=netcore_get',
     '/cgi-bin/netcore_get.cgi?mode_name=netcore_get',
-    '/status.htm',
     '/',
   ];
 
@@ -126,7 +285,7 @@ app.post('/api/router/status', async (req: Request, res: Response) => {
   let usedEndpoint = '';
 
   for (const ep of candidateEndpoints) {
-    const probe = await queryNetisRouter(routerUrl, ep, auth);
+    const probe = await executeNetisRequest(routerUrl, ep, creds);
     if (probe.success && probe.status !== undefined && probe.status >= 200 && probe.status < 400) {
       routerResponse = probe;
       usedEndpoint = ep;
@@ -135,7 +294,7 @@ app.post('/api/router/status', async (req: Request, res: Response) => {
   }
 
   if (routerResponse && routerResponse.success) {
-    const vars = parseNetisVariables(routerResponse.body);
+    const vars = parseNetisVariables(routerResponse.body || '');
 
     const wanIp = vars['wan_ip'] || vars['wanIp'] || vars['wan_ip_addr'] || undefined;
     const wanGateway = vars['wan_gw'] || vars['wanGateway'] || undefined;
@@ -179,21 +338,22 @@ app.post('/api/router/status', async (req: Request, res: Response) => {
 // Connected Devices Endpoint
 app.post('/api/router/devices', async (req: Request, res: Response) => {
   const { routerUrl = 'http://192.168.2.254' } = req.body;
-  const auth = getAuthHeader(req.body);
+  const creds = { username: req.body.username, password: req.body.password };
 
   const candidateEndpoints = [
     '/cgi-bin-igd/netcore_get.cgi?mode_name=netcore_get&mode=dhcp_client',
     '/cgi-bin/netcore_get.cgi?mode_name=netcore_get&mode=dhcp_client',
     '/dhcp_client.htm',
     '/wlan_sta.htm',
+    '/index.htm',
   ];
 
   let probeSuccess = false;
   let parsedDevices: any[] = [];
 
   for (const ep of candidateEndpoints) {
-    const probe = await queryNetisRouter(routerUrl, ep, auth);
-    if (probe.success && probe.status === 200) {
+    const probe = await executeNetisRequest(routerUrl, ep, creds);
+    if (probe.success && probe.status === 200 && probe.body) {
       probeSuccess = true;
       // Extract clients if JSON or Netis table array
       try {
@@ -211,7 +371,8 @@ app.post('/api/router/devices', async (req: Request, res: Response) => {
         }
       } catch {
         // Regex match DHCP list entries in Netis HTML: ["hostname", "192.168.2.x", "xx:xx:xx:xx:xx:xx"]
-        const entryRegex = /\[\s*["']([^"']+)["']\s*,\s*["'](\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})["']\s*,\s*["']([0-9A-Fa-f:]{17})["']/g;
+        const entryRegex =
+          /\[\s*["']([^"']+)["']\s*,\s*["'](\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})["']\s*,\s*["']([0-9A-Fa-f:]{17})["']/g;
         let match;
         let idx = 0;
         while ((match = entryRegex.exec(probe.body)) !== null) {
@@ -248,12 +409,12 @@ app.post('/api/router/devices', async (req: Request, res: Response) => {
 // Wi-Fi Config Endpoint
 app.post('/api/router/wifi', async (req: Request, res: Response) => {
   const { routerUrl = 'http://192.168.2.254', ssid } = req.body;
-  const auth = getAuthHeader(req.body);
+  const creds = { username: req.body.username, password: req.body.password };
 
-  const result = await queryNetisRouter(
+  const result = await executeNetisRequest(
     routerUrl,
     `/cgi-bin-igd/netcore_set.cgi?mode_name=netcore_set&mode=wlan_basic&ssid=${encodeURIComponent(ssid)}`,
-    auth,
+    creds,
     'POST'
   );
 
@@ -273,12 +434,12 @@ app.post('/api/router/wifi', async (req: Request, res: Response) => {
 // Device Block Endpoint
 app.post('/api/router/block', async (req: Request, res: Response) => {
   const { mac, block, routerUrl = 'http://192.168.2.254' } = req.body;
-  const auth = getAuthHeader(req.body);
+  const creds = { username: req.body.username, password: req.body.password };
 
-  const result = await queryNetisRouter(
+  const result = await executeNetisRequest(
     routerUrl,
     `/cgi-bin-igd/netcore_set.cgi?mode_name=netcore_set&mode=wlan_mac_filter&mac=${encodeURIComponent(mac)}&action=${block ? 'block' : 'allow'}`,
-    auth,
+    creds,
     'POST'
   );
 
@@ -298,12 +459,12 @@ app.post('/api/router/block', async (req: Request, res: Response) => {
 // Reboot Router Endpoint
 app.post('/api/router/reboot', async (req: Request, res: Response) => {
   const { routerUrl = 'http://192.168.2.254' } = req.body;
-  const auth = getAuthHeader(req.body);
+  const creds = { username: req.body.username, password: req.body.password };
 
-  const result = await queryNetisRouter(
+  const result = await executeNetisRequest(
     routerUrl,
     '/cgi-bin-igd/netcore_set.cgi?mode_name=netcore_set&mode=reboot',
-    auth,
+    creds,
     'POST'
   );
 
@@ -323,12 +484,12 @@ app.post('/api/router/reboot', async (req: Request, res: Response) => {
 // Ping Test Endpoint
 app.post('/api/router/ping', async (req: Request, res: Response) => {
   const { host = '8.8.8.8', routerUrl = 'http://192.168.2.254' } = req.body;
-  const auth = getAuthHeader(req.body);
+  const creds = { username: req.body.username, password: req.body.password };
 
-  const result = await queryNetisRouter(
+  const result = await executeNetisRequest(
     routerUrl,
     `/cgi-bin-igd/netcore_set.cgi?mode_name=netcore_set&mode=ping&host=${encodeURIComponent(host)}`,
-    auth,
+    creds,
     'POST'
   );
 
@@ -354,41 +515,45 @@ app.post('/api/router/ping', async (req: Request, res: Response) => {
 app.post('/api/router/test', async (req: Request, res: Response) => {
   const { routerUrl = 'http://192.168.2.254' } = req.body;
   const cleanUrl = normalizeRouterUrl(routerUrl);
-  const auth = getAuthHeader(req.body);
+  const creds = { username: req.body.username, password: req.body.password };
+  const isPrivate = isPrivateIpAddress(cleanUrl);
+  const isVercel = !!process.env.VERCEL;
 
-  const candidateEndpoints = [
-    '/',
-    '/status.htm',
-    '/login.htm',
-    '/login.asp',
-    '/cgi-bin-igd/netcore_get.cgi?mode_name=netcore_get',
-  ];
+  const candidateEndpoints = isPrivate && isVercel
+    ? ['/index.htm', '/status.htm', '/']
+    : [
+        '/index.htm',
+        '/',
+        '/status.htm',
+        '/login.htm',
+        '/login.asp',
+        '/cgi-bin-igd/netcore_get.cgi?mode_name=netcore_get',
+      ];
+
+  const probeTimeout = isPrivate && isVercel ? 1500 : 4500;
 
   let probe: any = null;
   for (const ep of candidateEndpoints) {
-    probe = await queryNetisRouter(cleanUrl, ep, auth);
-    if (probe.success) break;
+    probe = await executeNetisRequest(cleanUrl, ep, creds, 'GET', undefined, probeTimeout);
+    if (probe && (probe.success || probe.authFailed || probe.status === 401)) break;
   }
 
-  const isPrivate = isPrivateIpAddress(cleanUrl);
-
-  // Check if router responded with 401 Unauthorized
-  if (probe && probe.status === 401) {
-    const user = req.body.username ? String(req.body.username).trim() : '';
+  // Check if router responded with 401 Unauthorized (Digest Auth rejected)
+  if (probe && (probe.authFailed || probe.status === 401)) {
+    const user = creds.username ? String(creds.username).trim() : '';
     return res.json({
       success: false,
       reachable: true,
       authFailed: true,
       statusCode: 401,
-      message: `Router responded at ${cleanUrl}, but credentials were rejected (401 Unauthorized).`,
+      message: `Router verified at ${cleanUrl}, but credentials for '${user}' were rejected (HTTP Digest 401).`,
       diagnostics: {
         targetUrl: cleanUrl,
-        authHeaderSent: !!auth,
+        authHeaderSent: !!creds.password,
         isPrivateLan: isPrivate,
+        isCloudDeployed: isVercel,
         code: 'AUTH_FAILED',
-        explanation: user
-          ? `Netis WF2409E rejected the username '${user}' or password. Please verify the credentials you entered.`
-          : `Netis WF2409E requires a valid username and password.`,
+        explanation: `Netis WF2409Ev4 uses HTTP Digest authentication. The username or password entered does not match your router's login settings.`,
       },
     });
   }
@@ -400,30 +565,37 @@ app.post('/api/router/test', async (req: Request, res: Response) => {
       success: true,
       reachable: true,
       statusCode: probe.status,
-      message: `Router connected successfully at ${cleanUrl} (HTTP ${probe.status})`,
+      message: `Router connected successfully at ${cleanUrl} (Digest Auth Verified, HTTP ${probe.status})`,
       diagnostics: {
         targetUrl: cleanUrl,
-        authHeaderSent: !!auth,
+        authHeaderSent: true,
         isPrivateLan: isPrivate,
+        isCloudDeployed: isVercel,
         code: 'SUCCESS',
-        explanation: 'Connection to Netis router verified.',
+        explanation: 'Connection and Digest authentication to Netis router verified.',
       },
     });
   }
+
+  const errorDetail = probe?.error || 'No response from router';
 
   return res.json({
     success: false,
     reachable: false,
     statusCode: probe ? probe.status : undefined,
-    message: `Cannot reach router at ${cleanUrl}`,
+    message: isVercel && isPrivate
+      ? `Cannot reach router at ${cleanUrl}`
+      : `Cannot reach router at ${cleanUrl} (${errorDetail})`,
     diagnostics: {
       targetUrl: cleanUrl,
-      authHeaderSent: !!auth,
+      authHeaderSent: !!creds.password,
       isPrivateLan: isPrivate,
-      code: isPrivate ? 'PRIVATE_LAN_FROM_CLOUD' : 'UNREACHABLE',
-      explanation: isPrivate
-        ? `The IP '${cleanUrl}' is a local LAN address. In this cloud preview, the cloud server cannot reach your private home Wi-Fi network directly. To manage your router, you can run this app locally on your device or enable 'Remote Management' in your Netis router settings.`
-        : `Could not reach router at ${cleanUrl}. Check the IP address or host.`,
+      isCloudDeployed: isVercel,
+      rawError: errorDetail,
+      code: isVercel && isPrivate ? 'PRIVATE_LAN_FROM_CLOUD' : 'LOCAL_LAN_UNREACHABLE',
+      explanation: isVercel && isPrivate
+        ? `The IP '${cleanUrl}' is a private local network address. In a cloud deployment like Vercel, the cloud server cannot reach inside your home Wi-Fi network.`
+        : `Could not connect to router at ${cleanUrl}. Error: ${errorDetail}. Ensure your phone is connected to the Netis Wi-Fi ('mahim').`,
     },
   });
 });

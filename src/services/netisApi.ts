@@ -10,7 +10,7 @@ import { getVendorFromMac } from '../utils/macVendor';
 
 export const DEFAULT_CONFIG: ConnectionConfig = {
   routerUrl: 'http://192.168.2.254',
-  username: 'admin',
+  username: '',
   password: '',
 };
 

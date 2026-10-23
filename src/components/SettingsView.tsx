@@ -378,7 +378,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                 type="text"
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
-                placeholder="admin"
+                placeholder="Username (e.g. Mahim)"
                 required
                 className="w-full px-2.5 py-1.5 text-xs font-mono bg-slate-50 dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white"
               />
@@ -393,7 +393,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                   type={showConfigPass ? 'text' : 'password'}
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
-                  placeholder="Optional / blank"
+                  placeholder="Password"
                   className="w-full pl-2.5 pr-7 py-1.5 text-xs font-mono bg-slate-50 dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white"
                 />
                 <button
@@ -408,7 +408,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           </div>
 
           <span className="text-[10px] text-slate-400 block">
-            Netis default login is usually user &apos;admin&apos; with password empty or set during initial setup.
+            All router communications strictly use the exact Gateway URL, Username, and Password saved here.
           </span>
 
           <div className="flex items-center justify-between pt-1">
@@ -450,7 +450,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                     Authentication Rejected (401 Unauthorized)
                   </p>
                   <p className="mt-0.5">
-                    The router at {routerUrl} responded, but user &apos;{username}&apos; or password was incorrect. Netis default username is usually <code className="font-mono font-bold bg-amber-100 dark:bg-amber-900/50 px-1 rounded">admin</code>.
+                    The router at {routerUrl} rejected the credentials for username &apos;{username}&apos;. Please verify the exact username and password configured on your router.
                   </p>
                 </div>
               ) : testResult.diagnostics?.isPrivateLan ? (

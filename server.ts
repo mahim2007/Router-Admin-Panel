@@ -101,10 +101,18 @@ function parseNetisVariables(html: string): Record<string, string> {
   return result;
 }
 
+// Extract Basic Auth header strictly from user-provided credentials without hardcoded defaults
+function getAuthHeader(body: any): string | undefined {
+  const user = body && body.username !== undefined ? String(body.username).trim() : '';
+  const pass = body && body.password !== undefined ? String(body.password).trim() : '';
+  if (!user && !pass) return undefined;
+  return `Basic ${Buffer.from(`${user}:${pass}`).toString('base64')}`;
+}
+
 // Router Status Endpoint
 app.post('/api/router/status', async (req: Request, res: Response) => {
-  const { routerUrl = 'http://192.168.2.254', username = 'admin', password = '' } = req.body;
-  const auth = password ? `Basic ${Buffer.from(`${username}:${password}`).toString('base64')}` : undefined;
+  const { routerUrl = 'http://192.168.2.254' } = req.body;
+  const auth = getAuthHeader(req.body);
 
   // Try standard Netis status endpoints sequentially
   const candidateEndpoints = [
@@ -170,8 +178,8 @@ app.post('/api/router/status', async (req: Request, res: Response) => {
 
 // Connected Devices Endpoint
 app.post('/api/router/devices', async (req: Request, res: Response) => {
-  const { routerUrl = 'http://192.168.2.254', username = 'admin', password = '' } = req.body;
-  const auth = password ? `Basic ${Buffer.from(`${username}:${password}`).toString('base64')}` : undefined;
+  const { routerUrl = 'http://192.168.2.254' } = req.body;
+  const auth = getAuthHeader(req.body);
 
   const candidateEndpoints = [
     '/cgi-bin-igd/netcore_get.cgi?mode_name=netcore_get&mode=dhcp_client',
@@ -239,8 +247,8 @@ app.post('/api/router/devices', async (req: Request, res: Response) => {
 
 // Wi-Fi Config Endpoint
 app.post('/api/router/wifi', async (req: Request, res: Response) => {
-  const { routerUrl = 'http://192.168.2.254', ssid, password, username = 'admin' } = req.body;
-  const auth = req.body.password ? `Basic ${Buffer.from(`${username}:${req.body.password}`).toString('base64')}` : undefined;
+  const { routerUrl = 'http://192.168.2.254', ssid } = req.body;
+  const auth = getAuthHeader(req.body);
 
   const result = await queryNetisRouter(
     routerUrl,
@@ -265,11 +273,12 @@ app.post('/api/router/wifi', async (req: Request, res: Response) => {
 // Device Block Endpoint
 app.post('/api/router/block', async (req: Request, res: Response) => {
   const { mac, block, routerUrl = 'http://192.168.2.254' } = req.body;
+  const auth = getAuthHeader(req.body);
 
   const result = await queryNetisRouter(
     routerUrl,
     `/cgi-bin-igd/netcore_set.cgi?mode_name=netcore_set&mode=wlan_mac_filter&mac=${encodeURIComponent(mac)}&action=${block ? 'block' : 'allow'}`,
-    undefined,
+    auth,
     'POST'
   );
 
@@ -288,8 +297,8 @@ app.post('/api/router/block', async (req: Request, res: Response) => {
 
 // Reboot Router Endpoint
 app.post('/api/router/reboot', async (req: Request, res: Response) => {
-  const { routerUrl = 'http://192.168.2.254', username = 'admin', password = '' } = req.body;
-  const auth = password ? `Basic ${Buffer.from(`${username}:${password}`).toString('base64')}` : undefined;
+  const { routerUrl = 'http://192.168.2.254' } = req.body;
+  const auth = getAuthHeader(req.body);
 
   const result = await queryNetisRouter(
     routerUrl,
@@ -314,11 +323,12 @@ app.post('/api/router/reboot', async (req: Request, res: Response) => {
 // Ping Test Endpoint
 app.post('/api/router/ping', async (req: Request, res: Response) => {
   const { host = '8.8.8.8', routerUrl = 'http://192.168.2.254' } = req.body;
+  const auth = getAuthHeader(req.body);
 
   const result = await queryNetisRouter(
     routerUrl,
     `/cgi-bin-igd/netcore_set.cgi?mode_name=netcore_set&mode=ping&host=${encodeURIComponent(host)}`,
-    undefined,
+    auth,
     'POST'
   );
 
@@ -342,9 +352,9 @@ app.post('/api/router/ping', async (req: Request, res: Response) => {
 
 // Diagnostic Test Endpoint
 app.post('/api/router/test', async (req: Request, res: Response) => {
-  const { routerUrl = 'http://192.168.2.254', username = 'admin', password = '' } = req.body;
+  const { routerUrl = 'http://192.168.2.254' } = req.body;
   const cleanUrl = normalizeRouterUrl(routerUrl);
-  const auth = password ? `Basic ${Buffer.from(`${username}:${password}`).toString('base64')}` : undefined;
+  const auth = getAuthHeader(req.body);
 
   const candidateEndpoints = [
     '/',
@@ -364,6 +374,7 @@ app.post('/api/router/test', async (req: Request, res: Response) => {
 
   // Check if router responded with 401 Unauthorized
   if (probe && probe.status === 401) {
+    const user = req.body.username ? String(req.body.username).trim() : '';
     return res.json({
       success: false,
       reachable: true,
@@ -372,10 +383,12 @@ app.post('/api/router/test', async (req: Request, res: Response) => {
       message: `Router responded at ${cleanUrl}, but credentials were rejected (401 Unauthorized).`,
       diagnostics: {
         targetUrl: cleanUrl,
-        authHeaderSent: !!password,
+        authHeaderSent: !!auth,
         isPrivateLan: isPrivate,
         code: 'AUTH_FAILED',
-        explanation: `Netis WF2409E rejected the username or password. Default Netis username is usually 'admin'.`,
+        explanation: user
+          ? `Netis WF2409E rejected the username '${user}' or password. Please verify the credentials you entered.`
+          : `Netis WF2409E requires a valid username and password.`,
       },
     });
   }
@@ -390,7 +403,7 @@ app.post('/api/router/test', async (req: Request, res: Response) => {
       message: `Router connected successfully at ${cleanUrl} (HTTP ${probe.status})`,
       diagnostics: {
         targetUrl: cleanUrl,
-        authHeaderSent: !!password,
+        authHeaderSent: !!auth,
         isPrivateLan: isPrivate,
         code: 'SUCCESS',
         explanation: 'Connection to Netis router verified.',
@@ -405,7 +418,7 @@ app.post('/api/router/test', async (req: Request, res: Response) => {
     message: `Cannot reach router at ${cleanUrl}`,
     diagnostics: {
       targetUrl: cleanUrl,
-      authHeaderSent: !!password,
+      authHeaderSent: !!auth,
       isPrivateLan: isPrivate,
       code: isPrivate ? 'PRIVATE_LAN_FROM_CLOUD' : 'UNREACHABLE',
       explanation: isPrivate
@@ -436,4 +449,8 @@ async function startServer() {
   });
 }
 
-startServer();
+if (!process.env.VERCEL) {
+  startServer();
+}
+
+export default app;

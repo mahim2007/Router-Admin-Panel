@@ -1,0 +1,6 @@
+{
+  "name": "Netis WF2409E V4 Router Manager",
+  "description": "Premium White Glassmorphism Router Management Application for Netis WF2409E V4.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

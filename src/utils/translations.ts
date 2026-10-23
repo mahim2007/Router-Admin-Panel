@@ -1,0 +1,76 @@
+export const strings = {
+  appTitle: 'Netis Router',
+  modelBadge: 'Netis WF2409E V4',
+  firmware: 'Firmware',
+  home: 'Home',
+  devices: 'Devices',
+  speed: 'Speed',
+  wifi: 'Wi-Fi',
+  settings: 'Settings',
+
+  // Statuses
+  connected: 'Connected',
+  disconnected: 'Disconnected',
+  online: 'Online',
+  offline: 'Offline',
+  blocked: 'Blocked',
+  active: 'Active',
+  simulationMode: 'Simulation',
+  liveRouter: 'Live',
+
+  // Dashboard Summary
+  totalDevices: 'Total Devices',
+  onlineDevices: 'Online Devices',
+  offlineDevices: 'Offline Devices',
+  blockedDevices: 'Blocked Devices',
+  internetStatus: 'Internet',
+  currentWifi: 'Wi-Fi Network',
+  download: 'Download',
+  upload: 'Upload',
+  wanIp: 'WAN IP',
+  gateway: 'Gateway',
+  uptime: 'Uptime',
+
+  // Device Management
+  searchPlaceholder: 'Search name, IP, or MAC...',
+  all: 'All',
+  blockDevice: 'Block Device',
+  unblockDevice: 'Unblock Device',
+  speedLimit: 'Speed Limit',
+  rename: 'Rename',
+  saveChanges: 'Save Changes',
+  cancel: 'Cancel',
+  confirm: 'Confirm',
+  deviceDetails: 'Device Info',
+
+  // Speed
+  bandwidthControl: 'Bandwidth Control',
+  enableBandwidth: 'Enable Bandwidth Control',
+  totalUplink: 'Total Uplink',
+  totalDownlink: 'Total Downlink',
+  rules: 'Rules',
+  addRule: 'Add Rule',
+
+  // Wi-Fi
+  wifiSettings: 'Wi-Fi Settings',
+  wifiName: 'Wi-Fi Name (SSID)',
+  wifiPassword: 'Password',
+  wirelessRadio: 'Wireless Radio',
+  hideSsid: 'Hide SSID',
+  channel: 'Channel',
+  channelWidth: 'Channel Width',
+  securityMode: 'Security Mode',
+
+  // Settings & Security
+  adminSecurity: 'Admin Security',
+  routerAddress: 'Router Address',
+  adminPassword: 'Admin Password',
+  confirmPassword: 'Confirm Password',
+  oldPassword: 'Old Password',
+  newPassword: 'New Password',
+  rebootRouter: 'Reboot Router',
+  pingTest: 'Ping Test',
+  testConnection: 'Test Connection',
+  logout: 'Log Out',
+  refresh: 'Refresh',
+};
